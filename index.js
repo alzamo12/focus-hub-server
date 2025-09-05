@@ -1,6 +1,9 @@
 const express = require('express');
 const cors = require('cors');
-const { MongoClient, ServerApiVersion } = require('mongodb');
+const { MongoClient, ServerApiVersion, ObjectId } = require('mongodb');
+const { z, date } = require('zod');
+var admin = require("firebase-admin");
+var serviceAccount = require("./serviceAccountKey.json");
 require('dotenv').config();
 const app = express();
 const port = 5000;
@@ -8,6 +11,34 @@ const port = 5000;
 app.use(express.json());
 app.use(cors(['http://localhost:5173/']));
 
+
+admin.initializeApp({
+  credential: admin.credential.cert(serviceAccount)
+});
+
+const Days = z.enum([
+    "Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"
+]);
+
+const HHMM = /^\d{2}:\d{2}$/;
+
+const ClassCreateScheme = z.object({
+    subject: z.string().min(1, "Subject is required").max(100),
+    day: Days,
+    startTime: z.string().regex(HHMM, "Start time must be HM:MM"),
+    endTime: z.string().regex(HHMM, "endTime must be HH:MM"),
+    instructor: z.string().min(1, "Instructor is required").max(100),
+    color: z.string().regex(/^#([0-9A-Fa-f]{6})$/, "color must be hex"),
+    userEmail: z.string().min(1, "user email is required")
+}).refine((v) => v.startTime < v.endTime, {
+    message: "startTime must be before endTIme",
+    path: ["endTime"]
+});
+
+const classUpdateSchema = ClassCreateScheme.partial().refine((v) => {
+    if (v.startTime && v.endTime) return v.startTime < v.endTime;
+    return true
+}, { message: "startTime must be before endTime", path: ["endTime"] });
 
 const uri = `mongodb+srv://${process.env.DB_USER}:${process.env.DB_PASS}@cluster0.g8eto.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0`;
 
@@ -27,6 +58,31 @@ async function run() {
 
         const db = client.db("focusHub");
         const usersCollection = db.collection("users");
+        const classesCollection = db.collection("classes");
+
+        // middlerwares
+
+        const verifyToken = async (req, res, next) => {
+            // req.user = null;
+            const authHeader = req.headers?.authorization;
+            if (!authHeader || !authHeader.startsWith("Bearer ")) {
+                return res.status(401).send({ message: "unauthorized access" })
+            }
+
+            const token = authHeader.split(' ')[1];
+
+            try {
+                const decoded = await admin.auth().verifyIdToken(token);
+                req.user = decoded
+                // console.log(decoded)
+                next()
+            }
+            catch (error) {
+                console.log(error)
+                return res.status(401).send({ message: "unauthorized access" })
+            }
+        };
+
         // USER RELATED API'S
 
         // insert user to database
@@ -34,9 +90,9 @@ async function run() {
             const { user } = req.body;
             const email = user?.email;
 
-            const isExist = await usersCollection.findOne({email});
-            if(isExist){
-                return res.status(400).send({message: "User already Exist. Please login instead"})
+            const isExist = await usersCollection.findOne({ email });
+            if (isExist) {
+                return res.status(400).send({ message: "User already Exist. Please login instead" })
             }
 
             const userData = {
@@ -50,6 +106,77 @@ async function run() {
         app.get("/users", async (req, res) => {
             const result = await usersCollection.find({}).toArray();
             res.send(result)
+        });
+
+        //  GET all classes
+        app.get("/classes", verifyToken, async (req, res) => {
+            const { email } = req.query;
+            const user = req?.user;
+            if (email !== user?.email) {
+                return res.status(401).send({ message: 'unauthorized access' })
+            }
+            const query = {};
+
+            // set query if user passes an email
+            if (email) {
+                query.userEmail = email
+            }
+
+            const result = await classesCollection.find(query).toArray();
+            res.send(result);
+        });
+
+        app.post("/class", async (req, res) => {
+            try {
+                // const validatedData = ClassCreateScheme.parse(req.body);
+                const data = req.body;
+                const newData = {
+                    ...data,
+                    createAt: new Date()
+                };
+                const result = await classesCollection.insertOne(newData);
+                res.send(result)
+            }
+            catch (err) {
+                if (err.errors) {
+                    return res.status(400).send({ message: err.errors })
+                }
+                res.status(500).send({ message: "Internal server error" })
+                console.log(err)
+            }
+            finally {
+                console.log('class api hitter')
+            }
+        });
+
+        app.put("/classes/:id", async (req, res) => {
+            try {
+                const { id } = req.params;
+                const validatedData = classUpdateSchema.parse(req.body);
+                const query = { _id: new ObjectId(id) };
+                const updatedDoc = {
+                    $set: validatedData
+                };
+
+                const result = await classesCollection.updateOne(query, updatedDoc);
+                if (result.matchedCount === 0) {
+                    return res.status(404).json({ error: "Class not found" });
+                }
+                res.send(result)
+            }
+            catch (err) {
+                if (err.errors) {
+                    return res.status(400).json({ errors: err.errors });
+                }
+                res.status(500).json({ error: "Internal Server Error" });
+            }
+        });
+
+        app.delete("/class/:id", async (req, res) => {
+            const id = req.params.id;
+            const query = { _id: new ObjectId(id) };
+            const result = await classesCollection.deleteOne(query);
+            res.send(result);
         });
 
 

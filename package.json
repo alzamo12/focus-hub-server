@@ -12,9 +12,13 @@
   "license": "ISC",
   "type": "commonjs",
   "dependencies": {
+    "@tanstack/react-query": "^5.85.6",
+    "admin": "^1.4.1",
     "cors": "^2.8.5",
     "dotenv": "^17.2.1",
     "express": "^5.1.0",
-    "mongodb": "^6.19.0"
+    "firebase": "^12.2.1",
+    "mongodb": "^6.19.0",
+    "zod": "^4.1.5"
   }
 }
