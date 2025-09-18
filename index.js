@@ -1,10 +1,19 @@
-const express = require('express');
-const cors = require('cors');
-const { MongoClient, ServerApiVersion, ObjectId } = require('mongodb');
-const { z, date } = require('zod');
-var admin = require("firebase-admin");
-var serviceAccount = require("./serviceAccountKey.json");
-require('dotenv').config();
+import { GoogleGenerativeAI } from "@google/generative-ai";
+import express from "express";
+import cors from "cors";
+import dotenv from "dotenv";
+import { MongoClient, ServerApiVersion, ObjectId } from "mongodb";
+import { z, date } from "zod";
+import admin from "firebase-admin";
+// import serviceAccount from "./serviceAccountKey.json"
+// import serviceAccount from "./serviceAccountKey.json" assert { type: "json" };
+import fs from 'fs'
+
+const serviceAccount = JSON.parse(
+    fs.readFileSync(new URL("./serviceAccountKey.json", import.meta.url), "utf-8")
+);
+
+dotenv.config()
 const app = express();
 const port = 5000;
 
@@ -12,8 +21,16 @@ app.use(express.json());
 app.use(cors(['http://localhost:5173/']));
 
 
+// initialize gemini in project
+// const genAI = new GoogleGenerativeAI({
+//     apiKey: process.env.GEMINI_API_KEY,
+// });
+const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
+
+
+// initialize firebase admin
 admin.initializeApp({
-  credential: admin.credential.cert(serviceAccount)
+    credential: admin.credential.cert(serviceAccount)
 });
 
 const Days = z.enum([
@@ -83,6 +100,26 @@ async function run() {
             }
         };
 
+
+        // gemini api
+        app.post('/gemini', verifyToken, async (req, res) => {
+            const { sub } = req.body;
+
+            const prompt = `generate 5 questions with answers on ${sub} subject or topic`;
+
+            try {
+                const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
+
+                const result = await model.generateContent(prompt);
+
+                res.json({ reply: result.response.text() });
+            } catch (error) {
+                console.error("Gemini API error:", error);
+                res.status(500).json({ error: "Failed to fetch response from Gemini API" });
+            }
+        });
+
+
         // USER RELATED API'S
 
         // insert user to database
@@ -109,12 +146,12 @@ async function run() {
         });
 
         //  GET all classes
-        app.get("/classes", verifyToken, async (req, res) => {
+        app.get("/classes", async (req, res) => {
             const { email } = req.query;
             const user = req?.user;
-            if (email !== user?.email) {
-                return res.status(401).send({ message: 'unauthorized access' })
-            }
+            // if (email !== user?.email) {
+            //     return res.status(401).send({ message: 'unauthorized access' })
+            // }
             const query = {};
 
             // set query if user passes an email
@@ -123,7 +160,7 @@ async function run() {
             }
 
             const result = await classesCollection.find(query).toArray();
-            res.send(result);
+            res.status(200).send(result);
         });
 
         app.post("/class", async (req, res) => {
