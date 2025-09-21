@@ -5,13 +5,11 @@ import dotenv from "dotenv";
 import { MongoClient, ServerApiVersion, ObjectId } from "mongodb";
 import { z, date } from "zod";
 import admin from "firebase-admin";
-// import serviceAccount from "./serviceAccountKey.json"
-// import serviceAccount from "./serviceAccountKey.json" assert { type: "json" };
-import fs from 'fs'
 
-const serviceAccount = JSON.parse(
-    fs.readFileSync(new URL("./serviceAccountKey.json", import.meta.url), "utf-8")
-);
+// no need to read file
+// const serviceAccount = JSON.parse(
+//     fs.readFileSync(new URL("./serviceAccountKey.json", import.meta.url), "utf-8")
+// );
 
 dotenv.config()
 const app = express();
@@ -19,6 +17,7 @@ const port = 5000;
 
 app.use(express.json());
 app.use(cors(['http://localhost:5173/']));
+
 
 
 // initialize gemini in project
@@ -29,9 +28,19 @@ const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 
 
 // initialize firebase admin
-admin.initializeApp({
-    credential: admin.credential.cert(serviceAccount)
-});
+// admin.initializeApp({
+//     credential: admin.credential.cert(serviceAccount)
+// });
+
+if (!admin.apps.length) {
+    admin.initializeApp({
+        credential: admin.credential.cert({
+            projectId: process.env.FIREBASE_PROJECT_ID,
+            clientEmail: process.env.FIREBASE_CLIENT_EMAIL,
+            privateKey: process.env.FIREBASE_PRIVATE_KEY.replace(/\\n/g, "\n"),
+        }),
+    });
+}
 
 const Days = z.enum([
     "Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"
@@ -71,7 +80,7 @@ const client = new MongoClient(uri, {
 async function run() {
     try {
         // Connect the client to the server	(optional starting in v4.7)
-        await client.connect();
+        // await client.connect();
 
         const db = client.db("focusHub");
         const usersCollection = db.collection("users");
@@ -100,6 +109,16 @@ async function run() {
             }
         };
 
+        // for query parameter email verifications only
+        const verifyEmail = async (req, res, next) => {
+            const user = req?.user;
+            if (!user) return null;
+            if (user?.email !== req?.query?.email) {
+                return res.status(403).send({ message: "Forbidden Access" })
+            }
+            next();
+        };
+
 
         // gemini api
         app.post('/gemini', verifyToken, async (req, res) => {
@@ -112,7 +131,7 @@ async function run() {
 
                 const result = await model.generateContent(prompt);
 
-                res.json({ reply: result.response.text() });
+                -  res.json({ reply: result.response.text() });
             } catch (error) {
                 console.error("Gemini API error:", error);
                 res.status(500).json({ error: "Failed to fetch response from Gemini API" });
@@ -146,9 +165,9 @@ async function run() {
         });
 
         //  GET all classes
-        app.get("/classes", async (req, res) => {
+        app.get("/classes", verifyToken, verifyEmail, async (req, res) => {
             const { email } = req.query;
-            const user = req?.user;
+            // const user = req?.user;
             // if (email !== user?.email) {
             //     return res.status(401).send({ message: 'unauthorized access' })
             // }
@@ -158,12 +177,13 @@ async function run() {
             if (email) {
                 query.userEmail = email
             }
+            // {} ==> means get all value from the collection
 
             const result = await classesCollection.find(query).toArray();
             res.status(200).send(result);
         });
 
-        app.post("/class", async (req, res) => {
+        app.post("/class", verifyToken, async (req, res) => {
             try {
                 // const validatedData = ClassCreateScheme.parse(req.body);
                 const data = req.body;
@@ -182,24 +202,26 @@ async function run() {
                 console.log(err)
             }
             finally {
-                console.log('class api hitter')
+                // console.log('class api hitter')
             }
         });
 
-        app.put("/classes/:id", async (req, res) => {
+        app.patch("/class/:id", verifyToken, async (req, res) => {
+            // console.log('api hit')
             try {
                 const { id } = req.params;
-                const validatedData = classUpdateSchema.parse(req.body);
-                const query = { _id: new ObjectId(id) };
+                const clsData = req.body;
+                // const validatedData = classUpdateSchema.parse(req.body);
+                const query = { _id: new ObjectId(id), userEmail: req.user.email };
                 const updatedDoc = {
-                    $set: validatedData
+                    $set: clsData
                 };
+                // console.log(clsData)
 
                 const result = await classesCollection.updateOne(query, updatedDoc);
                 if (result.matchedCount === 0) {
-                    return res.status(404).json({ error: "Class not found" });
-                }
-                res.send(result)
+                    return res.status(403).json({ error: "Not authorized or class not found" });
+                } res.send(result)
             }
             catch (err) {
                 if (err.errors) {
@@ -209,18 +231,16 @@ async function run() {
             }
         });
 
-        app.delete("/class/:id", async (req, res) => {
+        app.delete("/class/:id", verifyToken, async (req, res) => {
             const id = req.params.id;
             const query = { _id: new ObjectId(id) };
             const result = await classesCollection.deleteOne(query);
             res.send(result);
         });
 
-
-
         // Send a ping to confirm a successful connection
-        await client.db("admin").command({ ping: 1 });
-        console.log("Pinged your deployment. You successfully connected to MongoDB!");
+        // await client.db("admin").command({ ping: 1 });
+        // console.log("Pinged your deployment. You successfully connected to MongoDB!");
     } finally {
         // Ensures that the client will close when you finish/error
         // await client.close();
@@ -235,5 +255,5 @@ app.get("/", (req, res) => {
 });
 
 app.listen(port, () => {
-    console.log(`focus hub is running on port: ${port}`)
+    // console.log(`focus hub is running on port: ${port}`)
 })
