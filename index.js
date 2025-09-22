@@ -85,6 +85,8 @@ async function run() {
         const db = client.db("focusHub");
         const usersCollection = db.collection("users");
         const classesCollection = db.collection("classes");
+        const expensesCollection = db.collection("expenses");
+        const budgetsCollection = db.collection("budgets");
 
         // middlerwares
 
@@ -237,6 +239,62 @@ async function run() {
             const result = await classesCollection.deleteOne(query);
             res.send(result);
         });
+
+        // expense related api
+        app.post("/expense", verifyToken, async (req, res) => {
+            try {
+                const expense = req.body;
+                const result = await expensesCollection.insertOne(expense);
+                res.send(result)
+            }
+            catch (err) {
+                console.log(err)
+            }
+        });
+
+        // get expenses
+        app.get("/expenses",verifyToken, async (req, res) => {
+            const { budgetId } = req.query;
+            const email = req.user.email;
+            const query = { userEmail: email };
+            if (budgetId) {
+                query.budgetId = budgetId
+            };
+
+            const result = await expensesCollection.find(query).toArray();
+            res.send(result)
+        })
+
+        // budget related api
+        app.post("/budget", verifyToken, async (req, res) => {
+            const budgetData = req.body;
+            const data = {
+                ...budgetData,
+                createdAt: new Date()
+            };
+            const result = await budgetsCollection.insertOne(data);
+            res.send(result)
+        })
+
+        // get a single budget of a user
+        app.get("/budget", verifyToken,verifyEmail, async (req, res) => {
+            const { email, month } = req.query;
+            const query = {
+                userEmail: email,
+                month: month
+            };
+            // console.log(query)
+            const result = await budgetsCollection.findOne(query);
+            // console.log(result)
+            res.send(result)
+        })
+
+        // get all budgets
+        app.get("/budgets", async (req, res) => {
+            const result = await budgetsCollection.find({}).toArray();
+            res.send(result)
+        })
+
 
         // Send a ping to confirm a successful connection
         // await client.db("admin").command({ ping: 1 });
