@@ -253,7 +253,7 @@ async function run() {
         });
 
         // get expenses
-        app.get("/expenses",verifyToken, async (req, res) => {
+        app.get("/expenses", verifyToken, async (req, res) => {
             const { budgetId } = req.query;
             const email = req.user.email;
             const query = { userEmail: email };
@@ -266,18 +266,26 @@ async function run() {
         })
 
         // budget related api
-        app.post("/budget", verifyToken, async (req, res) => {
-            const budgetData = req.body;
-            const data = {
-                ...budgetData,
-                createdAt: new Date()
+        app.put("/budget", verifyToken, async (req, res) => {
+            const { amount, userEmail, month } = req.body;
+            if (!month || !userEmail || !amount) {
+                return res.status(400).send({ message: "month, amount and userEmail are required" });
+            }
+
+            const filter = { userEmail, month };
+            const updatedDoc = {
+                $set: { amount, updatedAt: new Date() },
+                $setOnInsert: { createdAt: new Date() }
             };
-            const result = await budgetsCollection.insertOne(data);
+            const options = { upsert: true }
+
+            // const result = await budgetsCollection.insertOne(data);
+            const result = await budgetsCollection.updateOne(filter, updatedDoc, options)
             res.send(result)
         })
 
         // get a single budget of a user
-        app.get("/budget", verifyToken,verifyEmail, async (req, res) => {
+        app.get("/budget", verifyToken, verifyEmail, async (req, res) => {
             const { email, month } = req.query;
             const query = {
                 userEmail: email,
