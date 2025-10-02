@@ -1,10 +1,11 @@
-import { GoogleGenerativeAI } from "@google/generative-ai";
+// import { GoogleGenerativeAI } from "@google/generative-ai";
 import express from "express";
 import cors from "cors";
 import dotenv from "dotenv";
 import { MongoClient, ServerApiVersion, ObjectId } from "mongodb";
 import { z, date } from "zod";
 import admin from "firebase-admin";
+import { GoogleGenAI } from "@google/genai";
 
 // no need to read file
 // const serviceAccount = JSON.parse(
@@ -18,19 +19,7 @@ const port = 5000;
 app.use(express.json());
 app.use(cors(['http://localhost:5173/']));
 
-
-
-// initialize gemini in project
-// const genAI = new GoogleGenerativeAI({
-//     apiKey: process.env.GEMINI_API_KEY,
-// });
-const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
-
-
-// initialize firebase admin
-// admin.initializeApp({
-//     credential: admin.credential.cert(serviceAccount)
-// });
+// const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 
 if (!admin.apps.length) {
     admin.initializeApp({
@@ -40,7 +29,23 @@ if (!admin.apps.length) {
             privateKey: process.env.FIREBASE_PRIVATE_KEY.replace(/\\n/g, "\n"),
         }),
     });
-}
+};
+
+
+const ai = new GoogleGenAI({});
+async function generateQuestions(prompt) {
+    const response = await ai.models.generateContent({
+        model: "gemini-2.5-flash",
+        contents: prompt,
+        config: {
+            thinkingConfig: {
+                thinkingBudget: 0, // Disables thinking
+            },
+        }
+    });
+    //   console.log(response.text);
+    return response.text
+};
 
 const Days = z.enum([
     "Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"
@@ -80,7 +85,7 @@ const client = new MongoClient(uri, {
 async function run() {
     try {
         // Connect the client to the server	(optional starting in v4.7)
-        // await client.connect();
+        await client.connect();
 
         const db = client.db("focusHub");
         const usersCollection = db.collection("users");
@@ -124,21 +129,22 @@ async function run() {
 
         // gemini api
         app.post('/gemini', verifyToken, async (req, res) => {
-            const { sub } = req.body;
+            const { subject, subTopic, level, language } = req.body;
 
-            const prompt = `generate 5 questions with answers on ${sub} subject or topic`;
-
+            console.log(req.body)
+            const prompt = `generate 5 questions with answers on ${subject} at ${subTopic} and level ${level} subject or topic on ${language} language`;
+            // console.log(sub)
             try {
-                const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
-
-                const result = await model.generateContent(prompt);
-
-                -  res.json({ reply: result.response.text() });
+                const result = await generateQuestions(prompt);
+                // res.json({ reply: result.response.text() });
+                res.send(result)
             } catch (error) {
                 console.error("Gemini API error:", error);
                 res.status(500).json({ error: "Failed to fetch response from Gemini API" });
             }
         });
+
+
 
 
         // USER RELATED API'S
@@ -285,7 +291,7 @@ async function run() {
         })
 
         // get a single budget of a user
-        app.get("/budget", verifyToken, verifyEmail, async (req, res) => {
+        app.get("/budget",verifyToken, verifyEmail, async (req, res) => {
             const { email, month } = req.query;
             const query = {
                 userEmail: email,
@@ -305,15 +311,14 @@ async function run() {
 
 
         // Send a ping to confirm a successful connection
-        // await client.db("admin").command({ ping: 1 });
-        // console.log("Pinged your deployment. You successfully connected to MongoDB!");
+        await client.db("admin").command({ ping: 1 });
+        console.log("Pinged your deployment. You successfully connected to MongoDB!");
     } finally {
         // Ensures that the client will close when you finish/error
         // await client.close();
     }
 }
 run().catch(console.dir);
-
 
 
 app.get("/", (req, res) => {
