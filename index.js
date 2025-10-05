@@ -145,8 +145,6 @@ async function run() {
         });
 
 
-
-
         // USER RELATED API'S
 
         // insert user to database
@@ -174,18 +172,23 @@ async function run() {
 
         //  GET all classes
         app.get("/classes", verifyToken, verifyEmail, async (req, res) => {
-            const { email } = req.query;
-            // const user = req?.user;
-            // if (email !== user?.email) {
-            //     return res.status(401).send({ message: 'unauthorized access' })
-            // }
-            const query = {};
+            const { type, email } = req.query;
 
+            const query = {};
+            const now = new Date();
             // set query if user passes an email
             if (email) {
                 query.userEmail = email
             }
-            // {} ==> means get all value from the collection
+            // console.log(now)
+
+            // query based on type: next, prev, all
+            if (type.toLowerCase() === "next") {
+                query.endTime = { $gte: now };
+            } else if (type === "prev") {
+                query.endTime = { $lt: now };
+            }
+
 
             const result = await classesCollection.find(query).toArray();
             res.status(200).send(result);
@@ -194,9 +197,11 @@ async function run() {
         app.post("/class", verifyToken, async (req, res) => {
             try {
                 // const validatedData = ClassCreateScheme.parse(req.body);
-                const data = req.body;
+                const { endTime, startTime, ...data } = req.body;
                 const newData = {
                     ...data,
+                    startTime: new Date(startTime),
+                    endTime: new Date(endTime),
                     createAt: new Date()
                 };
                 const result = await classesCollection.insertOne(newData);
@@ -291,7 +296,7 @@ async function run() {
         })
 
         // get a single budget of a user
-        app.get("/budget",verifyToken, verifyEmail, async (req, res) => {
+        app.get("/budget", verifyToken, verifyEmail, async (req, res) => {
             const { email, month } = req.query;
             const query = {
                 userEmail: email,
@@ -308,6 +313,10 @@ async function run() {
             const result = await budgetsCollection.find({}).toArray();
             res.send(result)
         })
+
+
+        // classesCollection.deleteMany()
+
 
 
         // Send a ping to confirm a successful connection
