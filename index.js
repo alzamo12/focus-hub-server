@@ -190,18 +190,38 @@ async function run() {
             }
 
 
-            const result = await classesCollection.find(query).sort({startTime: 1}).toArray();
+            const result = await classesCollection.find(query).sort({ startTime: 1 }).toArray();
             res.status(200).send(result);
         });
 
         app.post("/class", verifyToken, async (req, res) => {
             try {
-                // const validatedData = ClassCreateScheme.parse(req.body);
                 const { endTime, startTime, ...data } = req.body;
+                const newStart = new Date(startTime);
+                const newEnd = new Date(endTime);
+
+                if (newStart >= newEnd) {
+                    return res.status(400).send({ message: "End time can not be before start time" })
+                }
+
+                const doesOverlap = await classesCollection.findOne({
+                    $or: [
+                        {
+                            startTime: { $lt: newEnd },
+                            endTime: { $gt: newStart }
+                        }
+                    ]
+                });
+
+                if (doesOverlap) {
+                    return res.status(400).send({ message: "It overlaps with another class schedule" })
+                }
+
+
                 const newData = {
                     ...data,
-                    startTime: new Date(startTime),
-                    endTime: new Date(endTime),
+                    startTime: newStart,
+                    endTime: newEnd,
                     createAt: new Date()
                 };
                 const result = await classesCollection.insertOne(newData);
