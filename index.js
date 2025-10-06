@@ -190,7 +190,7 @@ async function run() {
             }
 
 
-            const result = await classesCollection.find(query).toArray();
+            const result = await classesCollection.find(query).sort({startTime: 1}).toArray();
             res.status(200).send(result);
         });
 
