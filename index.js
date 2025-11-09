@@ -6,6 +6,8 @@ import { MongoClient, ServerApiVersion, ObjectId } from "mongodb";
 import { z, date } from "zod";
 import admin from "firebase-admin";
 import { GoogleGenAI } from "@google/genai";
+import createDOMPurify from "dompurify";
+import { JSDOM } from "jsdom";
 
 // no need to read file
 // const serviceAccount = JSON.parse(
@@ -46,6 +48,12 @@ async function generateQuestions(prompt) {
     //   console.log(response.text);
     return response.text
 };
+
+
+// dompurify
+const window = new JSDOM("").window;
+const DOMPurify = createDOMPurify(window);
+
 
 const Days = z.enum([
     "Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"
@@ -92,6 +100,7 @@ async function run() {
         const classesCollection = db.collection("classes");
         const expensesCollection = db.collection("expenses");
         const budgetsCollection = db.collection("budgets");
+        const notesCollection = db.collection("notes");
 
         // middlerwares
 
@@ -199,12 +208,15 @@ async function run() {
                 const { endTime, startTime, ...data } = req.body;
                 const newStart = new Date(startTime);
                 const newEnd = new Date(endTime);
-
+                const userEmail = req.user.email;
+                // 1. start time is after endtime or invalid time return 
                 if (newStart >= newEnd) {
                     return res.status(400).send({ message: "End time can not be before start time" })
                 }
 
+                // 2. check if the class schedule overlaps
                 const doesOverlap = await classesCollection.findOne({
+                    userEmail,
                     $or: [
                         {
                             startTime: { $lt: newEnd },
@@ -218,11 +230,13 @@ async function run() {
                 }
 
 
+                // 3. create and insert data
                 const newData = {
                     ...data,
                     startTime: newStart,
                     endTime: newEnd,
-                    createAt: new Date()
+                    createAt: new Date(),
+                    userEmail
                 };
                 const result = await classesCollection.insertOne(newData);
                 res.send(result)
@@ -243,11 +257,15 @@ async function run() {
             // console.log('api hit')
             try {
                 const { id } = req.params;
-                const clsData = req.body;
+                const { startTime, endTime, ...clsData } = req.body;
                 // const validatedData = classUpdateSchema.parse(req.body);
                 const query = { _id: new ObjectId(id), userEmail: req.user.email };
                 const updatedDoc = {
-                    $set: clsData
+                    $set: {
+                        ...clsData,
+                        startTime: new Date(startTime),
+                        endTime: new Date(endTime)
+                    }
                 };
                 // console.log(clsData)
 
@@ -332,8 +350,37 @@ async function run() {
         app.get("/budgets", async (req, res) => {
             const result = await budgetsCollection.find({}).toArray();
             res.send(result)
-        })
+        });
 
+
+        // notes realted api's
+
+        app.get("/notes", verifyToken, verifyEmail, async (req, res) => {
+            const { email } = req.query;
+            const query = { userEmail: email };
+            const result = await notesCollection.find(query).toArray();
+            res.send(result)
+        });
+
+        app.post("/note", verifyToken, async (req, res) => {
+            try {
+                const { subject, content } = req.body;
+                const cleanHTML = DOMPurify.sanitize(content);
+                const noteData = {
+                    subject,
+                    content: cleanHTML,
+                    userEmail: req.user.email,
+                    createdAt: new Date()
+                };
+
+                const result = await notesCollection.insertOne(noteData);
+                res.send(result)
+            }
+            catch (err) {
+                console.log(err)
+                return res.status(500).send({ message: "Internal error" })
+            }
+        })
 
         // classesCollection.deleteMany()
 
