@@ -380,6 +380,28 @@ async function run() {
                 console.log(err)
                 return res.status(500).send({ message: "Internal error" })
             }
+        });
+
+        // delete a specific note
+        app.delete("/note/:id", verifyToken, async (req, res) => {
+            try {
+                const { id } = req.params;
+                const { email } = req.user;
+                const query = {
+                    _id: new ObjectId(id),
+                    userEmail: email
+                };
+                const result = await notesCollection.deleteOne(query);
+                if (result?.deletedCount > 0) {
+                    res.send(result)
+                } else {
+                    res.status(404).send({ message: "Note not found" })
+                }
+            }
+            catch (err) {
+                console.log(err)
+                res.status(500).send({ message: "Internal Server error" })
+            }
         })
 
         // classesCollection.deleteMany()
