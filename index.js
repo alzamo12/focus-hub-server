@@ -8,6 +8,7 @@ import admin from "firebase-admin";
 import { GoogleGenAI } from "@google/genai";
 import createDOMPurify from "dompurify";
 import { JSDOM } from "jsdom";
+import { ca } from "zod/v4/locales";
 
 // no need to read file
 // const serviceAccount = JSON.parse(
@@ -355,7 +356,7 @@ async function run() {
 
         // notes realted api's
 
-        app.get("/notes", verifyToken, verifyEmail, async (req, res) => {
+        app.get("/notes", async (req, res) => {
             const { email } = req.query;
             const query = { userEmail: email };
             const result = await notesCollection.find(query).toArray();
@@ -364,9 +365,10 @@ async function run() {
 
         app.post("/note", verifyToken, async (req, res) => {
             try {
-                const { subject, content } = req.body;
+                const { content, title, subject } = req.body;
                 const cleanHTML = DOMPurify.sanitize(content);
                 const noteData = {
+                    title,
                     subject,
                     content: cleanHTML,
                     userEmail: req.user.email,
@@ -401,6 +403,46 @@ async function run() {
             catch (err) {
                 console.log(err)
                 res.status(500).send({ message: "Internal Server error" })
+            }
+        });
+
+        app.get("/note/:id", verifyToken, async (req, res) => {
+            try {
+                const { id } = req.params;
+                const query = {
+                    _id: new ObjectId(id),
+                    userEmail: req.user.email
+                };
+                const result = await notesCollection.findOne(query);
+                res.send(result)
+            } catch (err) {
+                console.log(err)
+                return res.status(500).send({ message: "internal server error" })
+            }
+        });
+
+        app.patch("/note/:id", verifyToken, async (req, res) => {
+            try {
+                const { id } = req.params;
+                const { content, title, subject } = req.body;
+                const cleanContent = DOMPurify.sanitize(content);
+                const query = {
+                    _id: new ObjectId(id),
+                    userEmail: req.user.email
+                };
+                const updatedDoc = {
+                    $set: {
+                        title,
+                        subject,
+                        content: cleanContent,
+                        updatedAt: new Date()
+                    }
+                };
+                const result = await notesCollection.updateOne(query, updatedDoc);
+                res.send(result)
+            } catch (err) {
+                console.log(err)
+                return res.status(500).send("Internal server error")
             }
         })
 
