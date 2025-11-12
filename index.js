@@ -356,9 +356,14 @@ async function run() {
 
         // notes realted api's
 
-        app.get("/notes", async (req, res) => {
-            const { email } = req.query;
+        app.get("/notes", verifyToken, verifyEmail, async (req, res) => {
+            const { email, subject } = req.query;
             const query = { userEmail: email };
+            // console.log(typeof subject)
+            if (subject && subject.toLocaleLowerCase() !== "undefined" && subject.toLocaleLowerCase() !== "null") {
+                query.subject = subject;
+            }
+            // console.log(query)
             const result = await notesCollection.find(query).toArray();
             res.send(result)
         });
