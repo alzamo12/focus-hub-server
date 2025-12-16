@@ -6,9 +6,8 @@ import { MongoClient, ServerApiVersion, ObjectId } from "mongodb";
 import { z, date } from "zod";
 import admin from "firebase-admin";
 import { GoogleGenAI } from "@google/genai";
-import createDOMPurify from "dompurify";
-import { JSDOM } from "jsdom";
 import { ca } from "zod/v4/locales";
+import sanitizeHtml from "sanitize-html";
 
 // no need to read file
 // const serviceAccount = JSON.parse(
@@ -20,7 +19,14 @@ const app = express();
 const port = 5000;
 
 app.use(express.json());
-app.use(cors(['http://localhost:5173/']));
+app.use(cors({
+    origin: [
+        'http://localhost:5173',
+        'https://focus-hub-63922.web.app'
+    ],
+    credentials: true,
+}));
+
 
 // const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 
@@ -35,7 +41,7 @@ if (!admin.apps.length) {
 };
 
 
-const ai = new GoogleGenAI({});
+const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
 async function generateQuestions(prompt) {
     const response = await ai.models.generateContent({
         model: "gemini-2.5-flash",
@@ -50,10 +56,6 @@ async function generateQuestions(prompt) {
     return response.text
 };
 
-
-// dompurify
-const window = new JSDOM("").window;
-const DOMPurify = createDOMPurify(window);
 
 
 const Days = z.enum([
@@ -94,7 +96,7 @@ const client = new MongoClient(uri, {
 async function run() {
     try {
         // Connect the client to the server	(optional starting in v4.7)
-        await client.connect();
+        // await client.connect();
 
         const db = client.db("focusHub");
         const usersCollection = db.collection("users");
@@ -102,6 +104,7 @@ async function run() {
         const expensesCollection = db.collection("expenses");
         const budgetsCollection = db.collection("budgets");
         const notesCollection = db.collection("notes");
+        const tasksCollection = db.collection("tasks");
 
         // middlerwares
 
@@ -141,7 +144,7 @@ async function run() {
         app.post('/gemini', verifyToken, async (req, res) => {
             const { subject, subTopic, level, language } = req.body;
 
-            console.log(req.body)
+            // console.log(req.body)
             const prompt = `generate 5 questions with answers on ${subject} at ${subTopic} and level ${level} subject or topic on ${language} language`;
             // console.log(sub)
             try {
@@ -360,8 +363,10 @@ async function run() {
             const { email, subject } = req.query;
             const query = { userEmail: email };
             // console.log(typeof subject)
-            if (subject && subject.toLocaleLowerCase() !== "undefined" && subject.toLocaleLowerCase() !== "null") {
-                query.subject = subject;
+            if (subject && subject.toLowerCase() !== "undefined" && subject.toLowerCase() !== "null") {
+                if (subject.toLowerCase() !== "all") {
+                    query.subject = subject;
+                }
             }
             // console.log(query)
             const result = await notesCollection.find(query).toArray();
@@ -371,11 +376,18 @@ async function run() {
         app.post("/note", verifyToken, async (req, res) => {
             try {
                 const { content, title, subject } = req.body;
-                const cleanHTML = DOMPurify.sanitize(content);
-                const noteData = {
+                const cleanHTML = sanitizeHtml(content, {
+                    allowedTags: sanitizeHtml.defaults.allowedTags.concat(["img"]),
+                    allowedAttributes: {
+                        a: ["href", "name", "target"],
+                        img: ["src", "alt"],
+                        "*": ["style"],
+                    },
+                }); const noteData = {
                     title,
                     subject,
                     content: cleanHTML,
+                    // content: content,
                     userEmail: req.user.email,
                     createdAt: new Date()
                 };
@@ -430,7 +442,7 @@ async function run() {
             try {
                 const { id } = req.params;
                 const { content, title, subject } = req.body;
-                const cleanContent = DOMPurify.sanitize(content);
+                // const cleanContent = DOMPurify.sanitize(content);
                 const query = {
                     _id: new ObjectId(id),
                     userEmail: req.user.email
@@ -439,7 +451,8 @@ async function run() {
                     $set: {
                         title,
                         subject,
-                        content: cleanContent,
+                        // content: cleanContent,
+                        content: content,
                         updatedAt: new Date()
                     }
                 };
@@ -451,13 +464,91 @@ async function run() {
             }
         })
 
+        app.post("/task", verifyToken, async (req, res) => {
+            try {
+                const { endTime, startTime, ...data } = req.body;
+                const newStart = new Date(startTime);
+                const newEnd = new Date(endTime);
+                const userEmail = req.user.email;
+                // 1. start time is after endtime or invalid time return 
+                if (newStart >= newEnd) {
+                    return res.status(400).send({ message: "End time can not be before start time" })
+                }
+
+                // 2. check if the class schedule overlaps
+                const doesOverlap = await tasksCollection.findOne({
+                    userEmail,
+                    $or: [
+                        {
+                            startTime: { $lt: newEnd },
+                            endTime: { $gt: newStart }
+                        }
+                    ]
+                });
+
+                if (doesOverlap) {
+                    return res.status(400).send({ message: "It overlaps with another class schedule" })
+                }
+
+
+                // 3. create and insert data
+                const newData = {
+                    ...data,
+                    startTime: newStart,
+                    endTime: newEnd,
+                    createAt: new Date(),
+                    userEmail
+                };
+                const result = await tasksCollection.insertOne(newData);
+                res.send(result)
+            }
+            catch (err) {
+                if (err.errors) {
+                    return res.status(400).send({ message: err.errors })
+                }
+                res.status(500).send({ message: "Internal server error" })
+                console.log(err)
+            }
+            finally {
+                // console.log('class api hitter')
+            }
+        });
+
+        app.get("/tasks", async (req, res) => {
+            try {
+                const { type, email } = req.query;
+                const now = new Date();
+                // if (!email) {
+                //     return res.status(400).send({ message: "Please provide an email" })
+                // };
+                const query = {};
+
+                if (email) {
+                    query.userEmail = email;
+                }
+
+                if (type.toLocaleLowerCase() === 'next') {
+                    query.endTime = { $gte: now }
+                }
+                else if (type.toLocaleLowerCase() === 'prev') {
+                    query.endTime = { $lt: now };
+                }
+
+                const result = await tasksCollection.find(query).sort({ startTime: 1 }).toArray();
+                res.send(result)
+            } catch (err) {
+                console.log(err)
+                res.status(500).send({ message: "Internal server error" })
+            }
+        })
+
         // classesCollection.deleteMany()
 
 
 
         // Send a ping to confirm a successful connection
-        await client.db("admin").command({ ping: 1 });
-        console.log("Pinged your deployment. You successfully connected to MongoDB!");
+        // await client.db("admin").command({ ping: 1 });
+        // console.log("Pinged your deployment. You successfully connected to MongoDB!");
     } finally {
         // Ensures that the client will close when you finish/error
         // await client.close();
@@ -470,6 +561,13 @@ app.get("/", (req, res) => {
     res.send(`Focus hub is Running`)
 });
 
+app.use((err, req, res, next) => {
+    console.error("Unhandled error:", err);
+    res.status(500).json({ error: "Something broke!" });
+});
+
 app.listen(port, () => {
-    // console.log(`focus hub is running on port: ${port}`)
+    console.log(`focus hub is running on port: ${port}`)
 })
+
+// export default app
