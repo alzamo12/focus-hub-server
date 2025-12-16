@@ -133,6 +133,7 @@ async function run() {
         const verifyEmail = async (req, res, next) => {
             const user = req?.user;
             if (!user) return null;
+            if(!req.query.email) return null;
             if (user?.email !== req?.query?.email) {
                 return res.status(403).send({ message: "Forbidden Access" })
             }
@@ -514,13 +515,11 @@ async function run() {
             }
         });
 
-        app.get("/tasks", async (req, res) => {
+        app.get("/tasks",verifyToken, verifyEmail, async (req, res) => {
             try {
                 const { type, email } = req.query;
                 const now = new Date();
-                // if (!email) {
-                //     return res.status(400).send({ message: "Please provide an email" })
-                // };
+
                 const query = {};
 
                 if (email) {
@@ -541,6 +540,25 @@ async function run() {
                 res.status(500).send({ message: "Internal server error" })
             }
         });
+
+        app.patch("/task/:id", verifyToken, async (req, res) => {
+            const { id } = req.params;
+            const { startTime, endTime, ...task } = req.body;
+            const query = {
+                _id: new ObjectId(id),
+                userEmail: req.user.email
+            };
+            const updatedDoc = {
+                $set: {
+                    ...task,
+                    startTime: new Date(startTime),
+                    endTime: new Date(endTime),
+                    updateAt: new Date()
+                }
+            };
+            const result = await tasksCollection.updateOne(query, updatedDoc);
+            res.send(result)
+        })
 
         app.delete("/task/:id", verifyToken, async (req, res) => {
             try {
