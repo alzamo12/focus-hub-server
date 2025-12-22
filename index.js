@@ -4,7 +4,7 @@ import cors from "cors";
 import dotenv from "dotenv";
 import { MongoClient, ServerApiVersion, ObjectId } from "mongodb";
 import { z, date } from "zod";
-import admin from "firebase-admin";
+import admin, { messaging } from "firebase-admin";
 import { GoogleGenAI } from "@google/genai";
 import { ca } from "zod/v4/locales";
 import sanitizeHtml from "sanitize-html";
@@ -106,7 +106,27 @@ async function run() {
         const notesCollection = db.collection("notes");
         const tasksCollection = db.collection("tasks");
 
-        // middlerwares
+
+        // creating indexes
+        const createIndexes = async () => {
+            try {
+                await classesCollection.createIndex({
+                    userEmail: 1,
+                    startTime: 1,
+                    endTime: 1
+                });
+                console.log("Classes index created!");
+            } catch (err) {
+                console.error("Index creation failed:", err);
+            }
+        }
+
+        // Call it after connecting MongoDB
+        createIndexes();
+        // const indexes = await classesCollection.indexes();
+        // console.log(indexes);
+
+        // middlewares
 
         const verifyToken = async (req, res, next) => {
             // req.user = null;
@@ -133,7 +153,7 @@ async function run() {
         const verifyEmail = async (req, res, next) => {
             const user = req?.user;
             if (!user) return null;
-            if(!req.query.email) return null;
+            if (!req.query.email) return null;
             if (user?.email !== req?.query?.email) {
                 return res.status(403).send({ message: "Forbidden Access" })
             }
@@ -186,26 +206,90 @@ async function run() {
 
         //  GET all classes
         app.get("/classes", verifyToken, verifyEmail, async (req, res) => {
-            const { type, email } = req.query;
+            /* 
+            NOTE --> 1. view has 2 values = flat and group
+                     2. type has 2 values = next and prev
+                     3. email is the value of the email from query email=.gmail.com
+            */
+            try {
+                const { view = 'flat', type = 'next', email } = req.query;
+                const now = new Date();
+                const pipeline = [];
 
-            const query = {};
-            const now = new Date();
-            // set query if user passes an email
-            if (email) {
-                query.userEmail = email
+                // STEP-1 --> first sort everything in ascending order [down to up]
+                pipeline.push({
+                    $sort: { startTime: 1 }
+                })
+
+                // STEP-2 -->   match the user with userEmail and compare it with now date to endTime property
+
+                const matchStage = {
+                    userEmail: email
+                };
+
+                const lowercaseType = type.toLowerCase();
+
+                switch (lowercaseType) {
+                    case "next":
+                        // if the endTime is greater than current time setting query type=next will return it
+                        matchStage.endTime = { $gte: now };
+                        break;
+                    case "prev":
+                        matchStage.endTime = { $lt: now };
+                        break;
+                    default:
+                        return res.status(400).send({ message: "Invalid type query parameter" })
+                }
+
+
+                pipeline.push({ $match: matchStage })
+
+                // STEP-3 --> group every classes based on date using startTime property. date is defined as unique id
+                const dateGroup = {
+                    $group: {
+                        _id: {
+                            // STEP-3I --> formatting date property
+                            $dateToString: {
+                                format: "%Y-%m-%d",
+                                date: "$startTime"
+                            }
+                        },
+                        // STEP-3II --> make array of classes for each date on startTime
+                        classes: { $push: "$$ROOT" },
+                        // STEP-3III --> get the total sum of classes held for each date
+                        totalClasses: { $sum: 1 }
+                    }
+                }
+
+                // STEP-4 -->  submit the result and as it is array convert it to array form json and use await
+                const lowerCaseView = view.toLowerCase();
+                switch (lowerCaseView) {
+                    case "flat":
+                        break;
+                    case "group":
+                        pipeline.push(
+                            dateGroup,
+                            {
+                                $project: {
+                                    _id: 0,
+                                    date: "$_id",
+                                    classes: 1,
+                                    totalClasses: 1
+                                }
+                            }
+                        );
+                        break;
+                    default:
+                        res.status(400).send({ message: "Invalid view query parameter" })
+                };
+
+                const result = await classesCollection.aggregate(pipeline).toArray();
+                res.json({ classes: result, view: view });
             }
-            // console.log(now)
-
-            // query based on type: next, prev, all
-            if (type.toLowerCase() === "next") {
-                query.endTime = { $gte: now };
-            } else if (type === "prev") {
-                query.endTime = { $lt: now };
+            catch (err) {
+                console.log(err)
+                res.status(500).send({ message: "Internal server error" })
             }
-
-
-            const result = await classesCollection.find(query).sort({ startTime: 1 }).toArray();
-            res.status(200).send(result);
         });
 
         app.post("/class", verifyToken, async (req, res) => {
@@ -358,7 +442,7 @@ async function run() {
         });
 
 
-        // notes realted api's
+        // notes related api's
 
         app.get("/notes", verifyToken, verifyEmail, async (req, res) => {
             const { email, subject } = req.query;
@@ -515,7 +599,7 @@ async function run() {
             }
         });
 
-        app.get("/tasks",verifyToken, verifyEmail, async (req, res) => {
+        app.get("/tasks", verifyToken, verifyEmail, async (req, res) => {
             try {
                 const { type, email } = req.query;
                 const now = new Date();
