@@ -3,10 +3,9 @@ import express from "express";
 import cors from "cors";
 import dotenv from "dotenv";
 import { MongoClient, ServerApiVersion, ObjectId } from "mongodb";
-import { z, date } from "zod";
-import admin, { messaging } from "firebase-admin";
+import { z } from "zod";
+import admin from "firebase-admin";
 import { GoogleGenAI } from "@google/genai";
-import { ca } from "zod/v4/locales";
 import sanitizeHtml from "sanitize-html";
 
 // no need to read file
@@ -30,6 +29,7 @@ app.use(cors({
 
 // const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 
+// firebase admin initialize
 if (!admin.apps.length) {
     admin.initializeApp({
         credential: admin.credential.cert({
@@ -115,7 +115,7 @@ async function run() {
                     startTime: 1,
                     endTime: 1
                 });
-                console.log("Classes index created!");
+                // console.log("Classes index created!");
             } catch (err) {
                 console.error("Index creation failed:", err);
             }
@@ -212,7 +212,7 @@ async function run() {
                      3. email is the value of the email from query email=.gmail.com
             */
             try {
-                const { view = 'flat', type = 'next', email } = req.query;
+                const { view = 'flat', type = 'next', timezone = 'Asia/Dhaka', email } = req.query;
                 const now = new Date();
                 const pipeline = [];
 
@@ -227,8 +227,8 @@ async function run() {
                     userEmail: email
                 };
 
+                // validate type query
                 const lowercaseType = type.toLowerCase();
-
                 switch (lowercaseType) {
                     case "next":
                         // if the endTime is greater than current time setting query type=next will return it
@@ -240,18 +240,25 @@ async function run() {
                     default:
                         return res.status(400).send({ message: "Invalid type query parameter" })
                 }
-
-
                 pipeline.push({ $match: matchStage })
 
                 // STEP-3 --> group every classes based on date using startTime property. date is defined as unique id
+
+                // Get all supported IANA timezones
+                const validTimezones = Intl.supportedValuesOf("timeZone");
+
+                if (!validTimezones.includes(timezone)) {
+                    // console.log(timezone)
+                    return res.status(400).send({ message: "Invalid timezone" });
+                }
                 const dateGroup = {
                     $group: {
                         _id: {
                             // STEP-3I --> formatting date property
                             $dateToString: {
                                 format: "%Y-%m-%d",
-                                date: "$startTime"
+                                date: "$startTime",
+                                timezone: timezone
                             }
                         },
                         // STEP-3II --> make array of classes for each date on startTime
@@ -262,6 +269,8 @@ async function run() {
                 }
 
                 // STEP-4 -->  submit the result and as it is array convert it to array form json and use await
+
+                // validate view
                 const lowerCaseView = view.toLowerCase();
                 switch (lowerCaseView) {
                     case "flat":
@@ -280,7 +289,7 @@ async function run() {
                         );
                         break;
                     default:
-                        res.status(400).send({ message: "Invalid view query parameter" })
+                        return res.status(400).send({ message: "Invalid view query parameter" })
                 };
 
                 const result = await classesCollection.aggregate(pipeline).toArray();
@@ -601,24 +610,77 @@ async function run() {
 
         app.get("/tasks", verifyToken, verifyEmail, async (req, res) => {
             try {
-                const { type, email } = req.query;
+                const { view = 'flat', type = 'next', timezone = 'Asia/Dhaka', email } = req.query;
                 const now = new Date();
+                const pipeline = [];
 
-                const query = {};
+                pipeline.push({
+                    $sort: { startTime: 1 }
+                });
 
-                if (email) {
-                    query.userEmail = email;
+                const matchStage = {
+                    userEmail: email
+                };
+
+                const lowercaseType = type?.toLowerCase();
+                switch (lowercaseType) {
+                    case "next":
+                        // if the endTime is greater than current time setting query type=next will return it
+                        matchStage.endTime = { $gte: now };
+                        break;
+                    case "prev":
+                        matchStage.endTime = { $lt: now };
+                        break;
+                    default:
+                        return res.status(400).send({ message: "Invalid type query parameter" })
+                }
+                pipeline.push({ $match: matchStage })
+
+                const validTimezones = Intl.supportedValuesOf("timeZone");
+
+                if (!validTimezones.includes(timezone)) {
+                    return res.status(400).send({ message: "Invalid timezone" });
+                }
+                const dateGroup = {
+                    $group: {
+                        _id: {
+                            // STEP-3I --> formatting date property
+                            $dateToString: {
+                                format: "%Y-%m-%d",
+                                date: "$startTime",
+                                timezone: timezone
+                            }
+                        },
+                        // STEP-3II --> make array of classes for each date on startTime
+                        tasks: { $push: "$$ROOT" },
+                        // STEP-3III --> get the total sum of classes held for each date
+                        totalTasks: { $sum: 1 }
+                    }
                 }
 
-                if (type.toLocaleLowerCase() === 'next') {
-                    query.endTime = { $gte: now }
-                }
-                else if (type.toLocaleLowerCase() === 'prev') {
-                    query.endTime = { $lt: now };
-                }
+                const lowerCaseView = view.toLowerCase();
+                switch (lowerCaseView) {
+                    case "flat":
+                        break;
+                    case "group":
+                        pipeline.push(
+                            dateGroup,
+                            {
+                                $project: {
+                                    _id: 0,
+                                    date: "$_id",
+                                    tasks: 1,
+                                    totalTasks: 1
+                                }
+                            }
+                        );
+                        break;
+                    default:
+                        return res.status(400).send({ message: "Invalid view query parameter" })
+                };
 
-                const result = await tasksCollection.find(query).sort({ startTime: 1 }).toArray();
-                res.send(result)
+                const result = await tasksCollection.aggregate(pipeline).toArray();
+                res.send({ tasks: result, view: lowerCaseView });
             } catch (err) {
                 console.log(err)
                 res.status(500).send({ message: "Internal server error" })
