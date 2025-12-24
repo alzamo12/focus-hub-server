@@ -119,7 +119,7 @@ async function run() {
             } catch (err) {
                 console.error("Index creation failed:", err);
             }
-        }
+        };
 
         // Call it after connecting MongoDB
         createIndexes();
@@ -212,38 +212,48 @@ async function run() {
                      3. email is the value of the email from query email=.gmail.com
             */
             try {
-                const { view = 'flat', type = 'next', timezone = 'Asia/Dhaka', email } = req.query;
+                const {
+                    view = 'flat',
+                    type = 'next',
+                    timezone = 'Asia/Dhaka',
+                    email,
+                    page = 1,
+                    limit = 5
+                } = req.query;
                 const now = new Date();
+                let pageNum = parseInt(page);
+                let pageLimit = parseInt(limit);
+                pageNum = Number.isInteger(pageNum) && pageNum > 0 ? pageNum : 1;
+                pageLimit = Number.isInteger(pageLimit) && pageLimit > 0 ? pageLimit : 5;
+                const skip = (pageNum - 1) * pageLimit;
                 const pipeline = [];
+                const countPipeline = [];
 
-                // STEP-1 --> first sort everything in ascending order [down to up]
-                pipeline.push({
-                    $sort: { startTime: 1 }
-                })
-
-                // STEP-2 -->   match the user with userEmail and compare it with now date to endTime property
+                // STEP-1 -->   match the user with userEmail and compare it with now date to endTime property
 
                 const matchStage = {
                     userEmail: email
                 };
 
                 // validate type query
+                let order;
                 const lowercaseType = type.toLowerCase();
                 switch (lowercaseType) {
                     case "next":
                         // if the endTime is greater than current time setting query type=next will return it
                         matchStage.endTime = { $gte: now };
+                        order = 1;
+
                         break;
                     case "prev":
                         matchStage.endTime = { $lt: now };
+                        order = -1
                         break;
                     default:
                         return res.status(400).send({ message: "Invalid type query parameter" })
                 }
                 pipeline.push({ $match: matchStage })
-
-                // STEP-3 --> group every classes based on date using startTime property. date is defined as unique id
-
+                // STEP-2 --> group every classes based on date using startTime property. date is defined as unique id
                 // Get all supported IANA timezones
                 const validTimezones = Intl.supportedValuesOf("timeZone");
 
@@ -274,10 +284,37 @@ async function run() {
                 const lowerCaseView = view.toLowerCase();
                 switch (lowerCaseView) {
                     case "flat":
+                        pipeline.push({ $sort: { startTime: order } });
+
+                        pipeline.push(
+                            { $skip: skip },
+                            { $limit: pageLimit }
+                        );
+
+                        countPipeline.push(
+                            { $match: matchStage },
+                            { $count: 'total' }
+                        )
+
+
                         break;
                     case "group":
+                        // pipeline.push(
+                        //     dateGroup,
+                        //     {
+                        //         $project: {
+                        //             _id: 0,
+                        //             date: "$_id",
+                        //             classes: 1,
+                        //             totalClasses: 1
+                        //         }
+                        //     }
+                        // );
                         pipeline.push(
                             dateGroup,
+                            { $sort: { _id: order } }, // sort by date
+                            { $skip: skip },       // paginate DATES
+                            { $limit: pageLimit },
                             {
                                 $project: {
                                     _id: 0,
@@ -287,13 +324,33 @@ async function run() {
                                 }
                             }
                         );
+                        countPipeline.push(
+                            { $match: matchStage },
+                            dateGroup,
+                            { $count: "total" }
+                        );
                         break;
                     default:
                         return res.status(400).send({ message: "Invalid view query parameter" })
                 };
 
-                const result = await classesCollection.aggregate(pipeline).toArray();
-                res.json({ classes: result, view: view });
+                const classes = await classesCollection.aggregate(pipeline).toArray();
+                const countDoc = await classesCollection.aggregate(countPipeline).next();
+                const totalDoc = countDoc?.total || 0;
+                const totalPages = Math.ceil(parseInt(totalDoc) / pageLimit);
+                console.log({
+                    totalPages,
+                    totalDoc
+                })
+                res.send({
+                    view: lowerCaseView,
+                    type: lowercaseType,
+                    page: pageNum,
+                    limit: pageLimit,
+                    totalDoc,
+                    totalPages,
+                    classes: classes,
+                });
             }
             catch (err) {
                 console.log(err)
