@@ -220,6 +220,7 @@ async function run() {
                     page = 1,
                     limit = 5
                 } = req.query;
+                console.log(limit)
                 const now = new Date();
                 let pageNum = parseInt(page);
                 let pageLimit = parseInt(limit);
@@ -253,6 +254,7 @@ async function run() {
                         return res.status(400).send({ message: "Invalid type query parameter" })
                 }
                 pipeline.push({ $match: matchStage })
+                countPipeline.push({ $match: matchStage })
                 // STEP-2 --> group every classes based on date using startTime property. date is defined as unique id
                 // Get all supported IANA timezones
                 const validTimezones = Intl.supportedValuesOf("timeZone");
@@ -290,13 +292,6 @@ async function run() {
                             { $skip: skip },
                             { $limit: pageLimit }
                         );
-
-                        countPipeline.push(
-                            { $match: matchStage },
-                            { $count: 'total' }
-                        )
-
-
                         break;
                     case "group":
                         // pipeline.push(
@@ -325,23 +320,20 @@ async function run() {
                             }
                         );
                         countPipeline.push(
-                            { $match: matchStage },
                             dateGroup,
-                            { $count: "total" }
                         );
                         break;
                     default:
                         return res.status(400).send({ message: "Invalid view query parameter" })
                 };
 
+                countPipeline.push({ $count: "total" })
+
                 const classes = await classesCollection.aggregate(pipeline).toArray();
                 const countDoc = await classesCollection.aggregate(countPipeline).next();
                 const totalDoc = countDoc?.total || 0;
-                const totalPages = Math.ceil(parseInt(totalDoc) / pageLimit);
-                console.log({
-                    totalPages,
-                    totalDoc
-                })
+                const totalPages = Math.ceil(totalDoc / pageLimit);
+                // console.log()
                 res.send({
                     view: lowerCaseView,
                     type: lowercaseType,
@@ -360,7 +352,7 @@ async function run() {
 
         app.post("/class", verifyToken, async (req, res) => {
             try {
-                const { endTime, startTime, ...data } = req.body;
+                const { endTime, startTime, date, ...data } = req.body;
                 const newStart = new Date(startTime);
                 const newEnd = new Date(endTime);
                 const userEmail = req.user.email;
@@ -388,6 +380,7 @@ async function run() {
                 // 3. create and insert data
                 const newData = {
                     ...data,
+                    date: new Date(date),
                     startTime: newStart,
                     endTime: newEnd,
                     createAt: new Date(),
