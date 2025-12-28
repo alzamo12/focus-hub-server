@@ -3,7 +3,7 @@ import express from "express";
 import cors from "cors";
 import dotenv from "dotenv";
 import { MongoClient, ServerApiVersion, ObjectId } from "mongodb";
-import { z } from "zod";
+import { pipe, z } from "zod";
 import admin from "firebase-admin";
 import { GoogleGenAI } from "@google/genai";
 import sanitizeHtml from "sanitize-html";
@@ -220,7 +220,7 @@ async function run() {
                     page = 1,
                     limit = 5
                 } = req.query;
-                console.log(limit)
+                // console.log(limit)
                 const now = new Date();
                 let pageNum = parseInt(page);
                 let pageLimit = parseInt(limit);
@@ -244,7 +244,6 @@ async function run() {
                         // if the endTime is greater than current time setting query type=next will return it
                         matchStage.endTime = { $gte: now };
                         order = 1;
-
                         break;
                     case "prev":
                         matchStage.endTime = { $lt: now };
@@ -278,7 +277,7 @@ async function run() {
                         // STEP-3III --> get the total sum of classes held for each date
                         totalClasses: { $sum: 1 }
                     }
-                }
+                };
 
                 // STEP-4 -->  submit the result and as it is array convert it to array form json and use await
 
@@ -294,17 +293,6 @@ async function run() {
                         );
                         break;
                     case "group":
-                        // pipeline.push(
-                        //     dateGroup,
-                        //     {
-                        //         $project: {
-                        //             _id: 0,
-                        //             date: "$_id",
-                        //             classes: 1,
-                        //             totalClasses: 1
-                        //         }
-                        //     }
-                        // );
                         pipeline.push(
                             dateGroup,
                             { $sort: { _id: order } }, // sort by date
@@ -319,9 +307,7 @@ async function run() {
                                 }
                             }
                         );
-                        countPipeline.push(
-                            dateGroup,
-                        );
+                        countPipeline.push(dateGroup);
                         break;
                     default:
                         return res.status(400).send({ message: "Invalid view query parameter" })
@@ -337,8 +323,8 @@ async function run() {
                 res.send({
                     view: lowerCaseView,
                     type: lowercaseType,
-                    page: pageNum,
-                    limit: pageLimit,
+                    pageLimit,
+                    currentPage: pageNum,
                     totalDoc,
                     totalPages,
                     classes: classes,
@@ -610,7 +596,7 @@ async function run() {
 
         app.post("/task", verifyToken, async (req, res) => {
             try {
-                const { endTime, startTime, ...data } = req.body;
+                const { endTime, startTime, date, ...data } = req.body;
                 const newStart = new Date(startTime);
                 const newEnd = new Date(endTime);
                 const userEmail = req.user.email;
@@ -638,6 +624,7 @@ async function run() {
                 // 3. create and insert data
                 const newData = {
                     ...data,
+                    date: new Date(date),
                     startTime: newStart,
                     endTime: newEnd,
                     createAt: new Date(),
@@ -660,31 +647,44 @@ async function run() {
 
         app.get("/tasks", verifyToken, verifyEmail, async (req, res) => {
             try {
-                const { view = 'flat', type = 'next', timezone = 'Asia/Dhaka', email } = req.query;
+                const {
+                    view = 'flat',
+                    type = 'next',
+                    timezone = 'Asia/Dhaka',
+                    page = 1,
+                    limit = 5,
+                    email
+                } = req.query;
                 const now = new Date();
+                let pageNum = parseInt(page);
+                let pageLimit = parseInt(limit);
+                pageNum = Number.isInteger(pageNum) && pageNum > 0 ? pageNum : 1;
+                pageLimit = Number.isInteger(pageLimit) && pageLimit > 0 ? pageLimit : 1;
+                const skip = (pageNum - 1) * pageLimit;
                 const pipeline = [];
-
-                pipeline.push({
-                    $sort: { startTime: 1 }
-                });
+                const countPipeline = [];
 
                 const matchStage = {
                     userEmail: email
                 };
 
+                let order;
                 const lowercaseType = type?.toLowerCase();
                 switch (lowercaseType) {
                     case "next":
                         // if the endTime is greater than current time setting query type=next will return it
                         matchStage.endTime = { $gte: now };
+                        order = 1;
                         break;
                     case "prev":
                         matchStage.endTime = { $lt: now };
+                        order = -1;
                         break;
                     default:
                         return res.status(400).send({ message: "Invalid type query parameter" })
                 }
-                pipeline.push({ $match: matchStage })
+                pipeline.push({ $match: matchStage });
+                countPipeline.push({ $match: matchStage });
 
                 const validTimezones = Intl.supportedValuesOf("timeZone");
 
@@ -711,10 +711,16 @@ async function run() {
                 const lowerCaseView = view.toLowerCase();
                 switch (lowerCaseView) {
                     case "flat":
+                        pipeline.push({ $sort: { startTime: order } });
+                        pipeline.push({ $skip: skip })
+                        pipeline.push({ $limit: pageLimit });
                         break;
                     case "group":
                         pipeline.push(
                             dateGroup,
+                            { $sort: { _id: order } },
+                            { $skip: skip },
+                            { $limit: pageLimit },
                             {
                                 $project: {
                                     _id: 0,
@@ -724,13 +730,27 @@ async function run() {
                                 }
                             }
                         );
+                        countPipeline.push(dateGroup);
                         break;
                     default:
                         return res.status(400).send({ message: "Invalid view query parameter" })
                 };
 
+                countPipeline.push({ $count: "total" })
+
                 const result = await tasksCollection.aggregate(pipeline).toArray();
-                res.send({ tasks: result, view: lowerCaseView });
+                const countDoc = await tasksCollection.aggregate(countPipeline).next();
+                const totalTasks = countDoc?.total || 0;
+                const totalPages = Math.ceil(totalTasks / pageLimit);
+                res.send({
+                    view: lowerCaseView,
+                    type: lowercaseType,
+                    pageLimit,
+                    currentPage: pageNum,
+                    totalTasks,
+                    totalPages,
+                    tasks: result
+                });
             } catch (err) {
                 console.log(err)
                 res.status(500).send({ message: "Internal server error" })
