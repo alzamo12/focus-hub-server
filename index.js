@@ -105,7 +105,7 @@ async function run() {
         const budgetsCollection = db.collection("budgets");
         const notesCollection = db.collection("notes");
         const tasksCollection = db.collection("tasks");
-
+        const aiRequestLimitsCollection = db.collection("ai_request_limits");
 
         // creating indexes
         const createIndexes = async () => {
@@ -160,10 +160,57 @@ async function run() {
             next();
         };
 
+        // ai time limit middleware
+        const aiRateLimit = async (req, res, next) => {
+            try {
+                const { email } = req.user;
+                const BLOCK_TIME = 5 * 60 * 1000; // 5 minutes
+                const now = new Date();
+
+                const record = await aiRequestLimitsCollection.findOne({ email });
+
+                if (!record) {
+                    await aiRequestLimitsCollection.insertOne({
+                        email,
+                        lastRequestAt: now,
+                        blockedUntil: new Date(now.getTime() + BLOCK_TIME)
+                    });
+
+                    return next()
+                };
+
+                if (now < new Date(record.blockedUntil)) {
+                    const waitSeconds = Math.ceil(
+                        (new Date(record.blockedUntil) - now) / 1000
+                    );
+
+                    return res.status(429).send({
+                        message: `Please wait ${waitSeconds} seconds before requesting again.`,
+                        retryAfter: waitSeconds
+                    });
+                };
+
+                await aiRequestLimitsCollection.updateOne(
+                    { email },
+                    {
+                        $set: {
+                            lastRequestAt: now,
+                            blockedUntil: new Date(now.getTime() + BLOCK_TIME)
+                        }
+                    }
+                );
+
+                next()
+            } catch (err) {
+                console.log("Internal server error", err)
+                res.status(500).send({ message: "Internal server error" })
+            }
+        }
+
 
         // gemini api
-        app.post('/gemini', verifyToken, async (req, res) => {
-            const { subject, subTopic, level, language } = req.body;
+        app.post('/gemini', verifyToken, aiRateLimit, async (req, res) => {
+            const { subject, subTopic, level, language = "english" } = req.body;
 
             // console.log(req.body)
             const prompt = `generate 5 questions with answers on ${subject} at ${subTopic} and level ${level} subject or topic on ${language} language`;
@@ -204,6 +251,7 @@ async function run() {
             res.send(result)
         });
 
+        const validTimezones = Intl.supportedValuesOf("timeZone");
         //  GET all classes
         app.get("/classes", verifyToken, verifyEmail, async (req, res) => {
             /* 
@@ -212,6 +260,9 @@ async function run() {
                      3. email is the value of the email from query email=.gmail.com
             */
             try {
+                // const validTimezones = Intl.supportedValuesOf("timeZone");
+                // const validTimezones = Intl.supportedValuesOf("timeZone");
+
                 const {
                     view = 'flat',
                     type = 'next',
@@ -228,7 +279,6 @@ async function run() {
                 pageLimit = Number.isInteger(pageLimit) && pageLimit > 0 ? pageLimit : 5;
                 const skip = (pageNum - 1) * pageLimit;
                 const pipeline = [];
-                const countPipeline = [];
 
                 // STEP-1 -->   match the user with userEmail and compare it with now date to endTime property
 
@@ -253,10 +303,8 @@ async function run() {
                         return res.status(400).send({ message: "Invalid type query parameter" })
                 }
                 pipeline.push({ $match: matchStage })
-                countPipeline.push({ $match: matchStage })
                 // STEP-2 --> group every classes based on date using startTime property. date is defined as unique id
                 // Get all supported IANA timezones
-                const validTimezones = Intl.supportedValuesOf("timeZone");
 
                 if (!validTimezones.includes(timezone)) {
                     // console.log(timezone)
@@ -285,50 +333,65 @@ async function run() {
                 const lowerCaseView = view.toLowerCase();
                 switch (lowerCaseView) {
                     case "flat":
-                        pipeline.push({ $sort: { startTime: order } });
-
                         pipeline.push(
-                            { $skip: skip },
-                            { $limit: pageLimit }
-                        );
+                            {
+                                $facet: {
+                                    data: [
+                                        { $sort: { startTime: order } },
+                                        { $skip: skip },
+                                        { $limit: pageLimit }
+                                    ],
+                                    count: [
+                                        { $count: "total" }
+                                    ]
+                                }
+                            });
                         break;
                     case "group":
                         pipeline.push(
                             dateGroup,
-                            { $sort: { _id: order } }, // sort by date
-                            { $skip: skip },       // paginate DATES
-                            { $limit: pageLimit },
                             {
-                                $project: {
-                                    _id: 0,
-                                    date: "$_id",
-                                    classes: 1,
-                                    totalClasses: 1
+                                $facet: {
+                                    data: [
+                                        { $sort: { _id: order } },
+                                        { $skip: skip },
+                                        { $limit: pageLimit },
+                                        {
+                                            $project: {
+                                                _id: 0,
+                                                date: "$_id",
+                                                classes: 1,
+                                                totalClasses: 1
+                                            }
+                                        }
+                                    ],
+                                    count: [
+                                        { $count: "total" }
+                                    ]
                                 }
                             }
-                        );
-                        countPipeline.push(dateGroup);
+                        )
                         break;
                     default:
                         return res.status(400).send({ message: "Invalid view query parameter" })
                 };
 
-                countPipeline.push({ $count: "total" })
 
-                const classes = await classesCollection.aggregate(pipeline).toArray();
-                const countDoc = await classesCollection.aggregate(countPipeline).next();
-                const totalDoc = countDoc?.total || 0;
-                const totalPages = Math.ceil(totalDoc / pageLimit);
-                // console.log()
-                res.send({
+                const classesData = await classesCollection.aggregate(pipeline).toArray();
+                const classes = classesData[0]?.data;
+                const totalClasses = classesData[0]?.count[0]?.total;
+                const totalPages = Math.ceil(totalClasses / pageLimit);
+                const resultedData = {
                     view: lowerCaseView,
                     type: lowercaseType,
                     pageLimit,
                     currentPage: pageNum,
-                    totalDoc,
+                    totalDoc: totalClasses,
                     totalPages,
                     classes: classes,
-                });
+                };
+
+                res.send(resultedData)
             }
             catch (err) {
                 console.log(err)
@@ -630,6 +693,7 @@ async function run() {
                     createAt: new Date(),
                     userEmail
                 };
+                console.log(req.user)
                 const result = await tasksCollection.insertOne(newData);
                 res.send(result)
             }
@@ -710,37 +774,56 @@ async function run() {
 
                 const lowerCaseView = view.toLowerCase();
                 switch (lowerCaseView) {
+
                     case "flat":
-                        pipeline.push({ $sort: { startTime: order } });
-                        pipeline.push({ $skip: skip })
-                        pipeline.push({ $limit: pageLimit });
+                        pipeline.push(
+                            {
+                                $facet: {
+                                    data: [
+                                        { $sort: { startTime: order } },
+                                        { $skip: skip },
+                                        { $limit: pageLimit }
+                                    ],
+                                    count: [
+                                        { $count: "total" }
+                                    ]
+                                }
+                            });
                         break;
                     case "group":
                         pipeline.push(
                             dateGroup,
-                            { $sort: { _id: order } },
-                            { $skip: skip },
-                            { $limit: pageLimit },
                             {
-                                $project: {
-                                    _id: 0,
-                                    date: "$_id",
-                                    tasks: 1,
-                                    totalTasks: 1
+                                $facet: {
+                                    data: [
+                                        { $sort: { _id: order } },
+                                        { $skip: skip },
+                                        { $limit: pageLimit },
+                                        {
+                                            $project: {
+                                                _id: 0,
+                                                date: "$_id",
+                                                tasks: 1,
+                                                totalTasks: 1
+                                            }
+                                        }
+                                    ],
+                                    count: [
+                                        { $count: "total" }
+                                    ]
                                 }
                             }
-                        );
-                        countPipeline.push(dateGroup);
+                        )
                         break;
                     default:
                         return res.status(400).send({ message: "Invalid view query parameter" })
                 };
 
-                countPipeline.push({ $count: "total" })
 
-                const result = await tasksCollection.aggregate(pipeline).toArray();
-                const countDoc = await tasksCollection.aggregate(countPipeline).next();
-                const totalTasks = countDoc?.total || 0;
+                const tasksData = await tasksCollection.aggregate(pipeline).toArray();
+                const tasks = tasksData[0]?.data;
+                const totalTasks = tasksData[0]?.count[0]?.total;
+
                 const totalPages = Math.ceil(totalTasks / pageLimit);
                 res.send({
                     view: lowerCaseView,
@@ -749,7 +832,7 @@ async function run() {
                     currentPage: pageNum,
                     totalTasks,
                     totalPages,
-                    tasks: result
+                    tasks
                 });
             } catch (err) {
                 console.log(err)
