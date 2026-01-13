@@ -209,7 +209,7 @@ async function run() {
 
 
         // gemini api
-        app.post('/gemini', verifyToken, aiRateLimit, async (req, res) => {
+        app.post('/gemini', verifyToken, async (req, res) => {
             const { subject, subTopic, level, language = "english" } = req.body;
 
             // console.log(req.body)
@@ -220,6 +220,13 @@ async function run() {
                 // res.json({ reply: result.response.text() });
                 res.send(result)
             } catch (error) {
+                const status = error?.status || error?.error?.code;
+                if (status === 503) {
+                    return res.status(503).send({
+                        message: "AI model is currently busy",
+                        retryAfter: 30
+                    })
+                }
                 console.error("Gemini API error:", error);
                 res.status(500).json({ error: "Failed to fetch response from Gemini API" });
             }
